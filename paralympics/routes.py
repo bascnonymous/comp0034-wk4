@@ -1,6 +1,7 @@
-from flask import current_app as app, request, make_response
+from flask import current_app as app, request, make_response, abort, jsonify
 from marshmallow import ValidationError
-
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm.exc import NoResultFound
 from paralympics import db
 from paralympics.models import Region, Event
 from paralympics.schemas import RegionSchema, EventSchema
@@ -12,23 +13,52 @@ events_schema = EventSchema(many=True)
 event_schema = EventSchema()
 
 
-@app.get("/regions")
+@app.errorhandler(ValidationError)
+def register_validation_error(error):
+    """Error handler for marshmallow schema validation errors.
+
+    Args:
+        error (ValidationError): Marshmallow error.
+    Returns:
+        HTTP response with the validation error message and the 400 status code
+    """
+    response = error.messages
+    return response, 400
+
+
+@app.errorhandler(NoResultFound)
+def resource_not_found(e):
+    """Error handler for 404.
+
+    Args:
+        HTTP 404 error
+    Returns:
+        JSON response with the validation error message and the 404 status code
+    """
+    return jsonify(error=str(e)), 404
+
+
+@app.get("/regions", endpoint="get_regions")
 def get_regions():
     """Returns a list of NOC region codes and their details in JSON.
 
     :returns: JSON
     """
-    # Select all the regions using Flask-SQLAlchemy
-    all_regions = db.session.execute(db.select(Region)).scalars()
-    # Dump the data using the Marshmallow regions schema; '.dump()' returns JSON.
-    result = regions_schema.dump(all_regions)
-    # Return the data in the HTTP response
+    try:
+        # Select all the regions using Flask-SQLAlchemy
+        all_regions = db.session.execute(db.select(Region)).scalars()
+        # Dump the data using the Marshmallow regions schema; '.dump()' returns JSON.
+        result = regions_schema.dump(all_regions)
+        # Return the data in the HTTP response
+    except SQLAlchemyError as e:
+        # See https://flask.palletsprojects.com/en/2.3.x/errorhandling/#returning-api-errors-as-json
+        abort(404, description="Region not found.")
     return result
 
 
-@app.get('/regions/<code>')
+@app.get("/regions/<code>", endpoint="get_region")
 def get_region(code):
-    """ Returns one region in JSON.
+    """Returns one region in JSON.
 
     :param code: The NOC code of the region to return
     :param type code: str
@@ -42,7 +72,7 @@ def get_region(code):
     return result
 
 
-@app.get("/events")
+@app.get("/events", endpoint="get_events")
 def get_events():
     """Returns a list of events and their details in JSON.
 
@@ -53,9 +83,9 @@ def get_events():
     return result
 
 
-@app.get('/events/<event_id>')
+@app.get("/events/<event_id>", endpoint="get_event")
 def get_event(event_id):
-    """ Returns the event with the given id JSON.
+    """Returns the event with the given id JSON.
 
     :param event_id: The id of the event to return
     :param type event_id: int
@@ -65,40 +95,40 @@ def get_event(event_id):
     return result
 
 
-@app.post('/events')
+@app.post("/events", endpoint="add_event")
 def add_event():
-    """ Adds a new event.
+    """Adds a new event.
 
-   Gets the JSON data from the request body and uses this to deserialise JSON to an object using Marshmallow
-   event_schema.loads()
+    Gets the JSON data from the request body and uses this to deserialise JSON to an object using Marshmallow
+    event_schema.loads()
 
-   :returns: JSON
-   """
+    :returns: JSON
+    """
     ev_json = request.get_json()
     event = event_schema.load(ev_json)
     db.session.add(event)
     db.session.commit()
-    return {"message": f"Event added with id= {event.id}"}
+    return {"message": f"Event added with id= {event.id}"}, 201
 
 
-@app.post('/regions')
+@app.post("/regions", endpoint="add_region")
 def add_region():
-    """ Adds a new region.
+    """Adds a new region.
 
-    Gets the JSON data from the request body and uses this to deserialise JSON to an object using Marshmallow
-   region_schema.loads()
+     Gets the JSON data from the request body and uses this to deserialise JSON to an object using Marshmallow
+    region_schema.loads()
 
-    :returns: JSON"""
+     :returns: JSON"""
     json_data = request.get_json()
     region = region_schema.load(json_data)
     db.session.add(region)
     db.session.commit()
-    return {"message": f"Region added with NOC= {region.NOC}"}
+    return {"message": f"Region added with NOC= {region.NOC}"}, 201
 
 
-@app.delete('/events/<int:event_id>')
+@app.delete("/events/<int:event_id>", endpoint="delete_event")
 def delete_event(event_id):
-    """ Deletes the event with the given id.
+    """Deletes the event with the given id.
 
     :param event_id: The id of the event to delete
     :returns: JSON"""
@@ -108,9 +138,9 @@ def delete_event(event_id):
     return {"message": f"Event {event_id} deleted"}
 
 
-@app.delete('/regions/<noc_code>')
+@app.delete("/regions/<noc_code>", endpoint="delete_region")
 def delete_region(noc_code):
-    """ Deletes the region with the given code.
+    """Deletes the region with the given code.
 
     <noc_code> is the NOC code of the region to delete.
 
@@ -121,7 +151,7 @@ def delete_region(noc_code):
     return {"message": f"Region {noc_code} deleted"}
 
 
-@app.patch("/events/<event_id>")
+@app.patch("/events/<event_id>", endpoint="event_update")
 def event_update(event_id):
     """
     Updates changed fields for the event.
@@ -148,7 +178,7 @@ def event_update(event_id):
     return response
 
 
-@app.route("/regions/<noc_code>", methods=['PUT', 'PATCH'])
+@app.route("/regions/<noc_code>", methods=["PUT", "PATCH"], endpoint="region_update")
 def region_update(noc_code):
     """
 
@@ -176,9 +206,9 @@ def region_update(noc_code):
     region_json = request.get_json()
 
     # Use Marshmallow to update the existing records with the changes from the json
-    if request.method == 'PATCH':
+    if request.method == "PATCH":
         r = region_schema.load(region_json, instance=existing_region, partial=True)
-    if request.method == 'PUT':
+    if request.method == "PUT":
         # If the region exists, update it
         if existing_region:
             try:
